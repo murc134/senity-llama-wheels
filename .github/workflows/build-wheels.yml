@@ -150,7 +150,17 @@ jobs:
           CIBW_SKIP: "*musllinux*"
           CIBW_ARCHS: ${{ matrix.archs }}
           CIBW_ENVIRONMENT: ${{ matrix.cibw_environment }}
-          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
+          # 2_34 (AlmaLinux 9): Image + auditwheel-Policy konsistent. Mit 2_28
+          # emittierte das Default-gcc-toolset libstdc++-Symbole, die zu neu fuer
+          # die 2_28-Policy waren -> "too-recent versioned symbols".
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_34"
+          # llama.cpp splittet die Lib in viele ko-gebundelte @rpath-dylibs
+          # (libggml*, libllama*); delocate kann sie im Temp nicht aufloesen und
+          # bricht ab, obwohl real nichts fehlt. --ignore-missing-dependencies
+          # ist der Weg der offiziellen llama-cpp-python-Wheels.
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
+            delocate-wheel --require-archs {delocate_archs}
+            --ignore-missing-dependencies -w {dest_dir} -v {wheel}
           CIBW_BUILD_VERBOSITY: "1"
           # llama.cpp braucht etwas Build-Zeit; ein Wheel pro Token reicht.
           CIBW_BEFORE_BUILD: "pip install cmake ninja"
