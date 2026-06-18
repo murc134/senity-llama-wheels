@@ -10,7 +10,7 @@ set -euo pipefail
 
 run_id="${1:-}"
 out="${2:-./out}"
-repo="mshcbrucksch/senity-llama-wheels"
+repo="murc134/senity-llama-wheels"
 
 if [[ -z "$run_id" ]]; then
   run_id=$(gh run list --repo "$repo" --workflow build-wheels.yml \
