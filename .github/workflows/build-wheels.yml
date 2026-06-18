@@ -106,6 +106,7 @@ jobs:
             cibw_environment: >-
               CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF"
               FORCE_CMAKE=1
+              LDFLAGS="-static-libstdc++ -static-libgcc"
 
     steps:
       - name: Plattform-Filter
@@ -148,11 +149,12 @@ jobs:
           CIBW_SKIP: "*musllinux*"
           CIBW_ARCHS: ${{ matrix.archs }}
           CIBW_ENVIRONMENT: ${{ matrix.cibw_environment }}
-          # 2_34 (AlmaLinux 9): Image + auditwheel-Policy konsistent. Mit 2_28
-          # emittierte das Default-gcc-toolset libstdc++-Symbole, die zu neu fuer
-          # die 2_28-Policy waren -> "too-recent versioned symbols". VOLLE Image-
-          # Referenz noetig: "manylinux_2_34" allein ist KEIN cibuildwheel-Alias.
-          CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_34_x86_64"
+          # Bewaehrtes 2_28-Image mit altem Interpreter-Layout (cibuildwheel
+          # 2.21.3 kann das neue manylinux-interpreters-Layout der :latest-Images
+          # NICHT). Die "too-recent symbols" der 2_28-Policy umgehen wir, indem
+          # libstdc++/libgcc STATISCH gelinkt werden (LDFLAGS oben) -> keine
+          # externe libstdc++-Abhaengigkeit -> auditwheel repariert auf glibc 2.28.
+          CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_28_x86_64:2024.10.07-1"
           # llama.cpp splittet die Lib in viele ko-gebundelte @rpath-dylibs
           # (libggml*, libllama*); delocate kann sie im Temp nicht aufloesen und
           # bricht ab, obwohl real nichts fehlt. --ignore-missing-dependencies
