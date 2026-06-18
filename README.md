@@ -20,12 +20,20 @@ z.B. `macosx_26_0`, und `pip` lehnt die Installation ab).
 
 ## Build ausloesen
 
-Actions -> **build-wheels** -> *Run workflow*. Inputs:
+**Variante A - manuell:** Actions -> **build-wheels** -> *Run workflow*. Inputs:
 
 | Input | Default | Zweck |
 |-------|---------|-------|
 | `llama_version` | `0.3.30` | PyPI-sdist-Version von `llama-cpp-python` |
 | `platforms` | `all` | `all` / `mac-only` / `mac-arm64` / `mac-x86_64` / `win` / `linux` |
+
+**Variante B - per Git-Tag** (loest den Build ueber den Deploy-Key aus, ohne
+UI/API-Rechte). Tag-Schema `build-<version>-<platforms>`:
+
+    git tag build-0.3.30-all && git push origin build-0.3.30-all
+    git tag build-0.3.31-mac-only && git push origin build-0.3.31-mac-only
+
+Fehlt der `-<platforms>`-Teil, wird `all` gebaut.
 
 Die Matrix baut pro Token einen eigenen Job (cibuildwheel auf den sdist):
 

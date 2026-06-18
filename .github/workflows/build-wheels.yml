@@ -31,12 +31,47 @@ on:
           - mac-x86_64
           - win
           - linux
+  # Git-Trigger: ein Tag der Form build-<version>-<platforms> startet den Build
+  # ueber den Deploy-Key, ohne API-Rechte. Beispiele:
+  #   build-0.3.30-all  /  build-0.3.31-mac-only  /  build-0.3.30-win
+  push:
+    tags:
+      - "build-*"
 
 permissions:
   contents: read
 
 jobs:
+  # Loest Version + Plattformen auf - aus workflow_dispatch-Inputs ODER aus dem
+  # Tag-Namen (build-<version>-<platforms>). Faellt auf Defaults zurueck.
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.r.outputs.version }}
+      platforms: ${{ steps.r.outputs.platforms }}
+    steps:
+      - id: r
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ver='${{ github.event.inputs.llama_version }}'
+            plat='${{ github.event.inputs.platforms }}'
+          else
+            tag="${GITHUB_REF_NAME}"      # z.B. build-0.3.30-mac-only
+            rest="${tag#build-}"           # 0.3.30-mac-only
+            ver="${rest%%-*}"              # 0.3.30 (vor dem ersten -)
+            plat="${rest#*-}"              # mac-only (nach dem ersten -)
+            [ "$plat" = "$rest" ] && plat="all"   # kein platforms-Teil im Tag
+          fi
+          [ -z "$ver" ] && ver="0.3.30"
+          [ -z "$plat" ] && plat="all"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "platforms=$plat" >> "$GITHUB_OUTPUT"
+          echo "Aufgeloest: version=$ver platforms=$plat (event=${{ github.event_name }})"
+
   build:
+    needs: setup
     name: ${{ matrix.token }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -79,7 +114,7 @@ jobs:
         id: filter
         shell: bash
         run: |
-          want='${{ github.event.inputs.platforms }}'
+          want='${{ needs.setup.outputs.platforms }}'
           grp='${{ matrix.group }}'
           build=no
           case "$want" in
@@ -103,7 +138,7 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           python -m pip install "cibuildwheel==2.21.3"
-          python -m pip download "llama-cpp-python==${{ github.event.inputs.llama_version }}" \
+          python -m pip download "llama-cpp-python==${{ needs.setup.outputs.version }}" \
             --no-binary :all: --no-deps -d sdist
           ls -la sdist
 
