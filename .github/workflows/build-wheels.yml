@@ -1,0 +1,135 @@
+name: build-wheels
+
+# Baut native llama-cpp-python-Wheels fuer den Senity-SpeechFlow-Runtime-Katalog
+# (runtime.json, #1987). Pro Plattform/Arch ein Wheel mit dem Token-Schema aus
+# speechflow/hardware.py: <os>-<arch>-cp<pyver>. CPython 3.13 (cp313).
+#
+# Strategie: cibuildwheel baut direkt aus dem PyPI-sdist von llama-cpp-python.
+# Das gibt einheitlich: manylinux-Repair (Linux), delocate (macOS) und ein
+# niedriges Deployment-Target (macOS 11.0 statt der Runner-Version 14/13).
+# x86-Builds sind AVX2-Baseline (GGML_NATIVE=OFF, AVX512 aus), damit sie auf
+# jeder x86-64-CPU seit ~2013 laufen (sonst STATUS_ILLEGAL_INSTRUCTION, #1987).
+#
+# Download der Artefakte -> nach hetzner unter <MODELS_DIR>/runtime/<token>/
+# hochladen -> dort scripts/gen_runtime_catalog.py signiert runtime.json neu.
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_version:
+        description: "llama-cpp-python Version (PyPI sdist)"
+        default: "0.3.30"
+        required: true
+      platforms:
+        description: "Welche Tokens bauen"
+        type: choice
+        default: "all"
+        options:
+          - all
+          - mac-only
+          - mac-arm64
+          - mac-x86_64
+          - win
+          - linux
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.token }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - token: mac-arm64-cp313
+            os: macos-14
+            archs: arm64
+            group: mac-arm64
+            cibw_environment: >-
+              CMAKE_ARGS="-DGGML_METAL=ON -DGGML_NATIVE=OFF"
+              FORCE_CMAKE=1
+              MACOSX_DEPLOYMENT_TARGET=11.0
+          - token: mac-x86_64-cp313
+            os: macos-13
+            archs: x86_64
+            group: mac-x86_64
+            cibw_environment: >-
+              CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_METAL=OFF -DGGML_ACCELERATE=OFF"
+              FORCE_CMAKE=1
+              MACOSX_DEPLOYMENT_TARGET=11.0
+          - token: win-amd64-cp313
+            os: windows-latest
+            archs: AMD64
+            group: win
+            cibw_environment: >-
+              CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF"
+              FORCE_CMAKE=1
+          - token: linux-x86_64-cp313
+            os: ubuntu-latest
+            archs: x86_64
+            group: linux
+            cibw_environment: >-
+              CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF"
+              FORCE_CMAKE=1
+
+    steps:
+      - name: Plattform-Filter
+        id: filter
+        shell: bash
+        run: |
+          want='${{ github.event.inputs.platforms }}'
+          grp='${{ matrix.group }}'
+          build=no
+          case "$want" in
+            all) build=yes ;;
+            mac-only) [[ "$grp" == mac-* ]] && build=yes ;;
+            *) [[ "$grp" == "$want" ]] && build=yes ;;
+          esac
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "Token=${{ matrix.token }} group=$grp want=$want -> build=$build"
+
+      - name: Python 3.13
+        if: steps.filter.outputs.build == 'yes'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: cibuildwheel + sdist holen
+        if: steps.filter.outputs.build == 'yes'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "cibuildwheel==2.21.3"
+          python -m pip download "llama-cpp-python==${{ github.event.inputs.llama_version }}" \
+            --no-binary :all: --no-deps -d sdist
+          ls -la sdist
+
+      - name: Wheel bauen
+        if: steps.filter.outputs.build == 'yes'
+        shell: bash
+        env:
+          CIBW_BUILD: "cp313-*"
+          CIBW_SKIP: "*musllinux*"
+          CIBW_ARCHS: ${{ matrix.archs }}
+          CIBW_ENVIRONMENT: ${{ matrix.cibw_environment }}
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
+          CIBW_BUILD_VERBOSITY: "1"
+          # llama.cpp braucht etwas Build-Zeit; ein Wheel pro Token reicht.
+          CIBW_BEFORE_BUILD: "pip install cmake ninja"
+        run: |
+          set -euxo pipefail
+          sdist_tar=$(ls sdist/llama_cpp_python-*.tar.gz)
+          python -m cibuildwheel --output-dir wheelhouse "$sdist_tar"
+          echo "=== gebaute Wheels ==="
+          ls -la wheelhouse
+
+      - name: Artefakt hochladen (${{ matrix.token }})
+        if: steps.filter.outputs.build == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.token }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
