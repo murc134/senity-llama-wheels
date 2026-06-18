@@ -85,7 +85,6 @@ jobs:
             cibw_environment: >-
               CMAKE_ARGS="-DGGML_METAL=ON -DGGML_NATIVE=OFF"
               FORCE_CMAKE=1
-              MACOSX_DEPLOYMENT_TARGET=11.0
           - token: mac-x86_64-cp313
             os: macos-13
             archs: x86_64
@@ -93,7 +92,6 @@ jobs:
             cibw_environment: >-
               CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_METAL=OFF -DGGML_ACCELERATE=OFF"
               FORCE_CMAKE=1
-              MACOSX_DEPLOYMENT_TARGET=11.0
           - token: win-amd64-cp313
             os: windows-latest
             archs: AMD64
@@ -152,8 +150,9 @@ jobs:
           CIBW_ENVIRONMENT: ${{ matrix.cibw_environment }}
           # 2_34 (AlmaLinux 9): Image + auditwheel-Policy konsistent. Mit 2_28
           # emittierte das Default-gcc-toolset libstdc++-Symbole, die zu neu fuer
-          # die 2_28-Policy waren -> "too-recent versioned symbols".
-          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_34"
+          # die 2_28-Policy waren -> "too-recent versioned symbols". VOLLE Image-
+          # Referenz noetig: "manylinux_2_34" allein ist KEIN cibuildwheel-Alias.
+          CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_34_x86_64"
           # llama.cpp splittet die Lib in viele ko-gebundelte @rpath-dylibs
           # (libggml*, libllama*); delocate kann sie im Temp nicht aufloesen und
           # bricht ab, obwohl real nichts fehlt. --ignore-missing-dependencies
@@ -166,6 +165,14 @@ jobs:
           CIBW_BEFORE_BUILD: "pip install cmake ninja"
         run: |
           set -euxo pipefail
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # llama.cpp erzwingt den SDK-Min und ignoriert ein NIEDRIGERES
+            # Deployment-Target. Das Wheel deshalb ehrlich mit dem REALEN
+            # Runner-SDK-Min taggen, sonst bricht delocate ab
+            # ("Library dependencies do not satisfy target MacOS version").
+            export MACOSX_DEPLOYMENT_TARGET="$(xcrun --show-sdk-version | cut -d. -f1).0"
+            echo "minos -> MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET (SDK $(xcrun --show-sdk-version))"
+          fi
           sdist_tar=$(ls sdist/llama_cpp_python-*.tar.gz)
           python -m cibuildwheel --output-dir wheelhouse "$sdist_tar"
           echo "=== gebaute Wheels ==="
