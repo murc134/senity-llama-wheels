@@ -85,12 +85,17 @@ jobs:
             cibw_environment: >-
               CMAKE_ARGS="-DGGML_METAL=ON -DGGML_NATIVE=OFF"
               FORCE_CMAKE=1
+          # x86_64 wird per CROSS-COMPILE auf dem arm64-Runner (macos-14) gebaut,
+          # weil der Intel-Runner macos-13 auf Free-Public-Repos chronisch
+          # ausgehungert ist (Job blieb 8h queued). scikit-build-core uebersetzt
+          # CIBW_ARCHS=x86_64 -> CMAKE_OSX_ARCHITECTURES; cibuildwheel skippt die
+          # Import-Tests bei Arch-Mismatch automatisch. minos = SDK des Runners.
           - token: mac-x86_64-cp313
-            os: macos-13
+            os: macos-14
             archs: x86_64
             group: mac-x86_64
             cibw_environment: >-
-              CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_METAL=OFF -DGGML_ACCELERATE=OFF"
+              CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_METAL=OFF -DGGML_ACCELERATE=OFF -DCMAKE_OSX_ARCHITECTURES=x86_64"
               FORCE_CMAKE=1
           - token: win-amd64-cp313
             os: windows-latest
