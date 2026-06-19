@@ -162,6 +162,14 @@ jobs:
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
             delocate-wheel --require-archs {delocate_archs}
             --ignore-missing-dependencies -w {dest_dir} -v {wheel}
+          # Linux analog: die intern ko-gebundelten lib{llama,ggml,mtmd}*.so
+          # per --exclude auslassen (laden via $ORIGIN), sonst bricht auditwheel
+          # mit "required library libllama.so.0 could not be located" ab. Echte
+          # Ext-Deps (z.B. libgomp) buendelt auditwheel weiterhin ein.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            auditwheel repair
+            --exclude 'libllama*.so*' --exclude 'libggml*.so*' --exclude 'libmtmd*.so*'
+            -w {dest_dir} {wheel}
           CIBW_BUILD_VERBOSITY: "1"
           # llama.cpp braucht etwas Build-Zeit; ein Wheel pro Token reicht.
           CIBW_BEFORE_BUILD: "pip install cmake ninja"
