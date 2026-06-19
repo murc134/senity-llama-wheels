@@ -83,7 +83,7 @@ jobs:
             archs: arm64
             group: mac-arm64
             cibw_environment: >-
-              CMAKE_ARGS="-DGGML_METAL=ON -DGGML_NATIVE=OFF"
+              CMAKE_ARGS="-DGGML_METAL=ON -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
               FORCE_CMAKE=1
           # x86_64 wird per CROSS-COMPILE auf dem arm64-Runner (macos-14) gebaut,
           # weil der Intel-Runner macos-13 auf Free-Public-Repos chronisch
@@ -95,7 +95,7 @@ jobs:
             archs: x86_64
             group: mac-x86_64
             cibw_environment: >-
-              CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_METAL=OFF -DGGML_ACCELERATE=OFF -DCMAKE_OSX_ARCHITECTURES=x86_64"
+              CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_METAL=OFF -DGGML_ACCELERATE=OFF -DCMAKE_OSX_ARCHITECTURES=x86_64 -DLLAMA_CURL=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
               FORCE_CMAKE=1
           - token: win-amd64-cp313
             os: windows-latest
@@ -109,7 +109,7 @@ jobs:
             archs: x86_64
             group: linux
             cibw_environment: >-
-              CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF"
+              CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
               FORCE_CMAKE=1
               LDFLAGS="-static-libstdc++ -static-libgcc"
 
@@ -167,14 +167,14 @@ jobs:
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
             delocate-wheel --require-archs {delocate_archs}
             --ignore-missing-dependencies -w {dest_dir} -v {wheel}
-          # Linux analog: die intern ko-gebundelten lib{llama,ggml,mtmd}*.so
-          # per --exclude auslassen (laden via $ORIGIN), sonst bricht auditwheel
-          # mit "required library libllama.so.0 could not be located" ab. Echte
-          # Ext-Deps (z.B. libgomp) buendelt auditwheel weiterhin ein.
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
-            auditwheel repair
-            --exclude 'libllama*.so*' --exclude 'libggml*.so*' --exclude 'libmtmd*.so*'
-            -w {dest_dir} {wheel}
+          # Linux: auditwheel-Repair GANZ ueberspringen. Das Wheel ist bereits
+          # self-contained: libstdc++/libgcc statisch (LDFLAGS), OpenMP aus (kein
+          # libgomp), curl/OpenSSL aus (kein libssl) -> keine externen Deps ausser
+          # glibc-Basis. Die internen lib{llama,ggml,mtmd}*.so laden via $ORIGIN.
+          # auditwheel konnte die ko-gebundelten Libs ohnehin nicht aufloesen.
+          # Wheel bleibt linux_x86_64 (glibc 2.28 vom Build-Image) - fuer den
+          # direkten Katalog-Install voellig ausreichend.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: ""
           CIBW_BUILD_VERBOSITY: "1"
           # llama.cpp braucht etwas Build-Zeit; ein Wheel pro Token reicht.
           CIBW_BEFORE_BUILD: "pip install cmake ninja"
