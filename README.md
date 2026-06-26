@@ -25,7 +25,7 @@ z.B. `macosx_26_0`, und `pip` lehnt die Installation ab).
 | Input | Default | Zweck |
 |-------|---------|-------|
 | `llama_version` | `0.3.30` | PyPI-sdist-Version von `llama-cpp-python` |
-| `platforms` | `all` | `all` / `mac-only` / `mac-arm64` / `mac-x86_64` / `win` / `linux` |
+| `platforms` | `all` | `all` / `mac-only` / `mac-arm64` / `mac-x86_64` / `win` / `win-cuda` / `linux` |
 
 **Variante B - per Git-Tag** (loest den Build ueber den Deploy-Key aus, ohne
 UI/API-Rechte). Tag-Schema `build-<version>-<platforms>`:
@@ -42,9 +42,18 @@ Die Matrix baut pro Token einen eigenen Job (cibuildwheel auf den sdist):
 | `mac-arm64-cp313` | macos-14 | Metal |
 | `mac-x86_64-cp313` | macos-13 | CPU AVX2 |
 | `win-amd64-cp313` | windows-latest | CPU AVX2 |
+| `win-amd64-cuda-cp311` | windows-latest + CUDA 12.4 | **CUDA** (GGML_CUDA=on), cp311 |
 | `linux-x86_64-cp313` | ubuntu-latest (manylinux_2_28) | CPU AVX2 |
 
 Jeder Job legt sein Wheel als Artefakt unter dem Token-Namen ab.
+
+Das CUDA-Wheel (SPEECH-2248) ist bewusst **cp311** (nicht cp313): die
+SpeechFlow-App buendelt Python 3.11, und der Client fragt auf Windows mit
+NVIDIA-GPU `win-amd64-cuda-cp311` an (`speechflow/hardware.runtime_token`).
+Es wird bei `platforms=all` und `platforms=win-cuda` gebaut, **nicht** bei
+`platforms=win` (das bleibt das CPU-AVX2-Wheel). Der CUDA-Toolkit-Install auf
+dem Runner laeuft ueber `Jimver/cuda-toolkit` (network-Install, nur die noetigen
+Sub-Pakete).
 
 ## Vom Artefakt zum signierten Katalog
 

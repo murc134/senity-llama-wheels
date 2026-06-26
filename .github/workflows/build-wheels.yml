@@ -2,7 +2,9 @@ name: build-wheels
 
 # Baut native llama-cpp-python-Wheels fuer den Senity-SpeechFlow-Runtime-Katalog
 # (runtime.json, #1987). Pro Plattform/Arch ein Wheel mit dem Token-Schema aus
-# speechflow/hardware.py: <os>-<arch>-cp<pyver>. CPython 3.13 (cp313).
+# speechflow/hardware.py: <os>-<arch>[-cuda]-cp<pyver>. CPU-Tokens: CPython 3.13
+# (cp313). Ausnahme: das CUDA-Wheel win-amd64-cuda-cp311 ist cp311 (SPEECH-2248),
+# weil die App Python 3.11 buendelt und nur dort -cuda angefragt wird.
 #
 # Strategie: cibuildwheel baut direkt aus dem PyPI-sdist von llama-cpp-python.
 # Das gibt einheitlich: manylinux-Repair (Linux), delocate (macOS) und ein
@@ -30,6 +32,7 @@ on:
           - mac-arm64
           - mac-x86_64
           - win
+          - win-cuda
           - linux
   # Git-Trigger: ein Tag der Form build-<version>-<platforms> startet den Build
   # ueber den Deploy-Key, ohne API-Rechte. Beispiele:
@@ -112,6 +115,23 @@ jobs:
               CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
               FORCE_CMAKE=1
               LDFLAGS="-static-libstdc++ -static-libgcc"
+          # CUDA-Variante (SPEECH-2248): GPU-beschleunigtes Windows-Wheel.
+          # Bewusst cp311 (NICHT cp313 wie die CPU-Tokens): die SpeechFlow-App
+          # buendelt Python 3.11, der Client fragt daher win-amd64-cuda-cp311 an
+          # (speechflow/hardware.runtime_token: -cuda nur fuer win+amd64).
+          # GGML_CUDA=on aktiviert das CUDA-Backend; die AVX2-Baseline bleibt fuer
+          # den CPU-Fallback-Code erhalten (kein AVX512), CMAKE_CUDA_ARCHITECTURES
+          # all-major deckt Maxwell..Hopper ab, ohne fuer jede Minor-SM zu bauen.
+          - token: win-amd64-cuda-cp311
+            os: windows-latest
+            archs: AMD64
+            group: win-cuda
+            py: "3.11"
+            cibw_build: "cp311-*"
+            cuda: "12.4.1"
+            cibw_environment: >-
+              CMAKE_ARGS="-DGGML_CUDA=on -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DCMAKE_CUDA_ARCHITECTURES=all-major"
+              FORCE_CMAKE=1
 
     steps:
       - name: Plattform-Filter
@@ -129,11 +149,24 @@ jobs:
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "Token=${{ matrix.token }} group=$grp want=$want -> build=$build"
 
-      - name: Python 3.13
+      - name: Python (matrix.py, Default 3.13)
         if: steps.filter.outputs.build == 'yes'
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.py || '3.13' }}
+
+      # CUDA-Toolkit nur fuer CUDA-Tokens. Jimver/cuda-toolkit setzt CUDA_PATH +
+      # haengt nvcc an PATH/GITHUB_PATH; cibuildwheel laeuft auf Windows nativ
+      # (kein Container) und erbt die Runner-Umgebung, daher findet CMake die
+      # CUDAToolkit ueber GGML_CUDA=on. method=network + sub-packages spart die
+      # ~3 GB des Full-Installers (Runner-Disk + Zeit).
+      - name: CUDA-Toolkit (nur CUDA-Token)
+        if: steps.filter.outputs.build == 'yes' && matrix.cuda != ''
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: ${{ matrix.cuda }}
+          method: network
+          sub-packages: '["nvcc", "cudart", "cccl", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
 
       - name: cibuildwheel + sdist holen
         if: steps.filter.outputs.build == 'yes'
@@ -150,7 +183,7 @@ jobs:
         if: steps.filter.outputs.build == 'yes'
         shell: bash
         env:
-          CIBW_BUILD: "cp313-*"
+          CIBW_BUILD: ${{ matrix.cibw_build || 'cp313-*' }}
           CIBW_SKIP: "*musllinux*"
           CIBW_ARCHS: ${{ matrix.archs }}
           CIBW_ENVIRONMENT: ${{ matrix.cibw_environment }}
