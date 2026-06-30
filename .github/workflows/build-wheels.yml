@@ -354,7 +354,19 @@ jobs:
           #    meist neben nvcc in $cudaBin; zur Sicherheit den realen Ordner der
           #    cudart-DLL suchen und alle Kandidaten in den add-path aufnehmen.
           #    --no-mangle-all laesst die ko-gebundelten libllama/libggml*-DLLs
-          #    unangetastet.
+          #    unangetastet (llama_cpp laedt sie spaeter via ctypes unter exaktem
+          #    Namen, Mangling wuerde den Lookup brechen).
+          #    --analyze-existing ist ZWINGEND: llama_cpp laedt ggml-cuda.dll erst
+          #    zur Laufzeit per ctypes-CDLL, nicht als verlinktes .pyd. delvewheel
+          #    startet seine Abhaengigkeits-Analyse aber an den .pyd-Entrypoints und
+          #    erreicht die ko-gebundelte ggml-cuda.dll sonst NIE -> es wuerde
+          #    "no external dependencies are needed" melden und cudart/cublas NICHT
+          #    einpacken. Das Wheel waere gruen, faellt auf dem Zielrechner aber auf
+          #    CPU zurueck (SPEECH-2299). --analyze-existing zwingt die Analyse der
+          #    bereits im Wheel liegenden DLLs.
+          #    --exclude nvcuda.dll: das ist die Treiber-API (kommt vom NVIDIA-
+          #    Treiber, liegt NICHT im add-path); ohne Exclude bricht delvewheel
+          #    mit "cannot find nvcuda.dll" hart ab.
           $dllDirs = @($cudaBin, (Join-Path $env:CONDA_PREFIX 'bin'), (Join-Path $env:CONDA_PREFIX 'Library\bin')) |
             Where-Object { Test-Path $_ }
           $cudartHit = Get-ChildItem -Path $env:CONDA_PREFIX -Recurse -Filter cudart64_*.dll -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -362,9 +374,23 @@ jobs:
           $addPath = ($dllDirs | Select-Object -Unique) -join ';'
           Write-Host "delvewheel add-path = $addPath"
           New-Item -ItemType Directory -Force -Path wheelhouse | Out-Null
-          delvewheel repair --no-mangle-all --add-path "$addPath" -w wheelhouse $rawWheel
+          delvewheel repair --analyze-existing --no-mangle-all --exclude "nvcuda.dll" --add-path "$addPath" -w wheelhouse $rawWheel
           Write-Host "=== gebaute Wheels ==="
           Get-ChildItem wheelhouse
+
+          # 7) Verifikation: das reparierte Wheel MUSS cudart64_* und cublas64_*
+          #    enthalten, sonst ist es ein stiller CPU-Fallback-Build. Hart failen,
+          #    damit so ein Wheel nie nach hetzner staged wird.
+          $fixed = (Get-ChildItem wheelhouse\*.whl | Select-Object -First 1).FullName
+          $names = & python -c "import sys,zipfile; print('\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))" $fixed
+          $hasCudart = $names -match 'cudart64_\d+\.dll'
+          $hasCublas = $names -match 'cublas64_\d+\.dll'
+          Write-Host "Vendor-Check: cudart=$([bool]$hasCudart) cublas=$([bool]$hasCublas)"
+          if (-not ($hasCudart -and $hasCublas)) {
+            Write-Host "::error::CUDA-Runtime-DLLs fehlen im Wheel (cudart=$([bool]$hasCudart), cublas=$([bool]$hasCublas)). Wheel wuerde auf CPU zurueckfallen (SPEECH-2299). Build abgebrochen."
+            $names | Where-Object { $_ -match '\.dll$' } | ForEach-Object { Write-Host "  in-wheel DLL: $_" }
+            exit 1
+          }
 
       - name: Artefakt hochladen (win-amd64-cuda-cp311)
         uses: actions/upload-artifact@v4
