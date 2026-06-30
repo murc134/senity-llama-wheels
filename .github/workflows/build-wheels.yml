@@ -123,21 +123,31 @@ jobs:
           # den CPU-Fallback-Code erhalten (kein AVX512), CMAKE_CUDA_ARCHITECTURES
           # all-major deckt Maxwell..Hopper ab, ohne fuer jede Minor-SM zu bauen.
           - token: win-amd64-cuda-cp311
-            # Bewusst windows-2022 statt windows-latest: letzteres zeigt seit
-            # Juni 2026 auf windows-2025-vs2026 (Server 2025, Build 26100,
-            # Visual Studio 2026). Der CUDA-12.4.1-Installer kennt weder dieses
-            # OS noch die VS2026-Integration und crasht beim Entpacken
-            # (visual_studio_integration_12.4, exit 3772776473, Run 28336767329).
-            # CUDA 12.4 + VS2022 auf windows-2022 ist die validierte Kombination.
+            # Bewusst windows-2022 statt windows-latest (= windows-2025/VS2026).
+            # Achtung: Der CUDA-12.4.1-Crash (exit 3772776473, Run 28336767329
+            # und 28424545254) lag NICHT am OS, sondern am Subpaket
+            # visual_studio_integration_12.4 - das crasht auch auf windows-2022.
+            # Loesung: VS-Integration weglassen (Ninja-Build braucht sie nicht),
+            # MSVC via ilammy/msvc-dev-cmd aktivieren und nvcc per
+            # -allow-unsupported-compiler gegen das zu neue VS2022 17.1x haerten
+            # (siehe sub-packages + cibw_environment unten). windows-2022 bleibt,
+            # weil VS2022 17.x von CUDA 12.4 (mit dem Flag) toleriert wird.
             os: windows-2022
             archs: AMD64
             group: win-cuda
             py: "3.11"
             cibw_build: "cp311-*"
             cuda: "12.4.1"
+            # -allow-unsupported-compiler: der windows-2022-Runner traegt
+            # inzwischen VS2022 17.1x (MSVC 19.4x), das CUDA 12.4 offiziell nicht
+            # mehr kennt. nvcc bricht ohne diesen Schalter mit host_config-Fehler
+            # ab. CMAKE_GENERATOR=Ninja erzwingt den Ninja-Build (kein VS-Generator
+            # => keine visual_studio_integration noetig); MSVC kommt aus
+            # ilammy/msvc-dev-cmd (Step unten), das cl.exe + INCLUDE/LIB auf PATH legt.
             cibw_environment: >-
-              CMAKE_ARGS="-DGGML_CUDA=on -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DCMAKE_CUDA_ARCHITECTURES=all-major"
+              CMAKE_ARGS="-DGGML_CUDA=on -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DCMAKE_CUDA_ARCHITECTURES=all-major -DCMAKE_CUDA_COMPILER_ARG1=-allow-unsupported-compiler"
               FORCE_CMAKE=1
+              CMAKE_GENERATOR=Ninja
             # Das CUDA-Wheel braucht cudart64_12 + cublas64_12/cublasLt64_12
             # eingebettet, sonst laedt es auf einem Rechner ohne installiertes
             # CUDA-Toolkit nicht (der NVIDIA-Treiber allein liefert cublas NICHT).
@@ -181,7 +191,18 @@ jobs:
         with:
           cuda: ${{ matrix.cuda }}
           method: network
-          sub-packages: '["nvcc", "cudart", "cccl", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+          # KEIN visual_studio_integration: dessen Subpaket-Installer crasht auf
+          # dem aktuellen Runner (exit 3772776473) und wird fuer den Ninja-Build
+          # ohnehin nicht gebraucht (nur der VS-Generator nutzt die MSBuild-Props).
+          sub-packages: '["nvcc", "cudart", "cccl", "cublas", "cublas_dev", "thrust"]'
+
+      # MSVC-Umgebung fuer den Ninja-CUDA-Build aktivieren (cl.exe + INCLUDE/LIB
+      # auf PATH). cibuildwheel selbst macht das nicht; ohne diesen Step findet
+      # cmake/nvcc keinen Host-Compiler. Schreibt nach GITHUB_ENV/GITHUB_PATH,
+      # daher erbt der spaetere cibuildwheel-Step die Umgebung.
+      - name: MSVC-Umgebung (nur CUDA-Token)
+        if: steps.filter.outputs.build == 'yes' && matrix.cuda != ''
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: cibuildwheel + sdist holen
         if: steps.filter.outputs.build == 'yes'
