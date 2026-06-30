@@ -288,12 +288,24 @@ jobs:
             "${cudaChannel}::libcublas" `
             "${cudaChannel}::libcublas-dev"
 
-          # 2) Pfade ableiten. Auf Windows liegen die nvidia-conda-Pakete unter
-          #    $CONDA_PREFIX\Library (nicht direkt im Env-Root).
-          $cudaRoot = Join-Path $env:CONDA_PREFIX 'Library'
-          $cudaBin  = Join-Path $cudaRoot 'bin'
-          $nvccPath = Join-Path $cudaBin 'nvcc.exe'
-          if (-not (Test-Path $nvccPath)) { throw "nvcc nicht gefunden unter $nvccPath" }
+          # 2) Pfade DYNAMISCH ableiten. Die nvidia-conda-Pakete folgen auf
+          #    Windows NICHT der Library\-Konvention, sondern legen nvcc + DLLs
+          #    direkt unter dem Env-Root ab (Linux-Layout, z.B. $CONDA_PREFIX\bin).
+          #    Run 28425305252 ist genau an der festen Annahme
+          #    $CONDA_PREFIX\Library\bin\nvcc.exe gescheitert (nvcc war installiert,
+          #    nur woanders). Daher nvcc.exe rekursiv suchen und cudaBin/cudaRoot
+          #    aus dem realen Fund ableiten.
+          Write-Host "CONDA_PREFIX = $env:CONDA_PREFIX"
+          Write-Host "--- Env-Root-Top-Level ---"
+          Get-ChildItem -Path $env:CONDA_PREFIX -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+          $nvcc = Get-ChildItem -Path $env:CONDA_PREFIX -Recurse -Filter nvcc.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $nvcc) { throw "nvcc.exe nirgends unter $env:CONDA_PREFIX gefunden" }
+          $nvccPath = $nvcc.FullName
+          $cudaBin  = Split-Path $nvccPath -Parent
+          $cudaRoot = Split-Path $cudaBin -Parent
+          Write-Host "nvcc gefunden: $nvccPath"
+          Write-Host "cudaBin  = $cudaBin"
+          Write-Host "cudaRoot = $cudaRoot"
           $nvccCmake = $nvccPath.Replace('\','/')
           & $nvccPath --version
 
@@ -338,10 +350,19 @@ jobs:
           Write-Host "Rohwheel: $rawWheel"
 
           # 6) CUDA-Runtime-DLLs ins Wheel vendoren (cudart64_12/cublas64_12/
-          #    cublasLt64_12 liegen in $cudaBin). --no-mangle-all laesst die
-          #    ko-gebundelten libllama/libggml*-DLLs unangetastet.
+          #    cublasLt64_12). Im Linux-Layout der nvidia-conda-Pakete liegen sie
+          #    meist neben nvcc in $cudaBin; zur Sicherheit den realen Ordner der
+          #    cudart-DLL suchen und alle Kandidaten in den add-path aufnehmen.
+          #    --no-mangle-all laesst die ko-gebundelten libllama/libggml*-DLLs
+          #    unangetastet.
+          $dllDirs = @($cudaBin, (Join-Path $env:CONDA_PREFIX 'bin'), (Join-Path $env:CONDA_PREFIX 'Library\bin')) |
+            Where-Object { Test-Path $_ }
+          $cudartHit = Get-ChildItem -Path $env:CONDA_PREFIX -Recurse -Filter cudart64_*.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($cudartHit) { $dllDirs = @($cudartHit.DirectoryName) + $dllDirs }
+          $addPath = ($dllDirs | Select-Object -Unique) -join ';'
+          Write-Host "delvewheel add-path = $addPath"
           New-Item -ItemType Directory -Force -Path wheelhouse | Out-Null
-          delvewheel repair --no-mangle-all --add-path "$cudaBin" -w wheelhouse $rawWheel
+          delvewheel repair --no-mangle-all --add-path "$addPath" -w wheelhouse $rawWheel
           Write-Host "=== gebaute Wheels ==="
           Get-ChildItem wheelhouse
 
