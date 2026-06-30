@@ -115,48 +115,11 @@ jobs:
               CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON"
               FORCE_CMAKE=1
               LDFLAGS="-static-libstdc++ -static-libgcc"
-          # CUDA-Variante (SPEECH-2248): GPU-beschleunigtes Windows-Wheel.
-          # Bewusst cp311 (NICHT cp313 wie die CPU-Tokens): die SpeechFlow-App
-          # buendelt Python 3.11, der Client fragt daher win-amd64-cuda-cp311 an
-          # (speechflow/hardware.runtime_token: -cuda nur fuer win+amd64).
-          # GGML_CUDA=on aktiviert das CUDA-Backend; die AVX2-Baseline bleibt fuer
-          # den CPU-Fallback-Code erhalten (kein AVX512), CMAKE_CUDA_ARCHITECTURES
-          # all-major deckt Maxwell..Hopper ab, ohne fuer jede Minor-SM zu bauen.
-          - token: win-amd64-cuda-cp311
-            # Bewusst windows-2022 statt windows-latest (= windows-2025/VS2026).
-            # Achtung: Der CUDA-12.4.1-Crash (exit 3772776473, Run 28336767329
-            # und 28424545254) lag NICHT am OS, sondern am Subpaket
-            # visual_studio_integration_12.4 - das crasht auch auf windows-2022.
-            # Loesung: VS-Integration weglassen (Ninja-Build braucht sie nicht),
-            # MSVC via ilammy/msvc-dev-cmd aktivieren und nvcc per
-            # -allow-unsupported-compiler gegen das zu neue VS2022 17.1x haerten
-            # (siehe sub-packages + cibw_environment unten). windows-2022 bleibt,
-            # weil VS2022 17.x von CUDA 12.4 (mit dem Flag) toleriert wird.
-            os: windows-2022
-            archs: AMD64
-            group: win-cuda
-            py: "3.11"
-            cibw_build: "cp311-*"
-            cuda: "12.4.1"
-            # -allow-unsupported-compiler: der windows-2022-Runner traegt
-            # inzwischen VS2022 17.1x (MSVC 19.4x), das CUDA 12.4 offiziell nicht
-            # mehr kennt. nvcc bricht ohne diesen Schalter mit host_config-Fehler
-            # ab. CMAKE_GENERATOR=Ninja erzwingt den Ninja-Build (kein VS-Generator
-            # => keine visual_studio_integration noetig); MSVC kommt aus
-            # ilammy/msvc-dev-cmd (Step unten), das cl.exe + INCLUDE/LIB auf PATH legt.
-            cibw_environment: >-
-              CMAKE_ARGS="-DGGML_CUDA=on -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DCMAKE_CUDA_ARCHITECTURES=all-major -DCMAKE_CUDA_COMPILER_ARG1=-allow-unsupported-compiler"
-              FORCE_CMAKE=1
-              CMAKE_GENERATOR=Ninja
-            # Das CUDA-Wheel braucht cudart64_12 + cublas64_12/cublasLt64_12
-            # eingebettet, sonst laedt es auf einem Rechner ohne installiertes
-            # CUDA-Toolkit nicht (der NVIDIA-Treiber allein liefert cublas NICHT).
-            # delvewheel vendort diese DLLs ins Wheel; --no-mangle-all laesst die
-            # ko-gebundelten llama-DLLs (libllama/libggml*) unangetastet, die sich
-            # gegenseitig ueber feste Namen laden. Jimver/cuda-toolkit haengt das
-            # CUDA-bin an PATH, daher findet delvewheel cudart/cublas dort.
-            cibw_repair_windows: >-
-              delvewheel repair --no-mangle-all -w {dest_dir} {wheel}
+          # Das CUDA-Wheel (win-amd64-cuda-cp311) wird NICHT hier in der
+          # cibuildwheel-Matrix gebaut, sondern im eigenen Job build-cuda weiter
+          # unten - der GPU-Build braucht einen komplett anderen Toolchain-Weg
+          # (conda/mamba CUDA vom nvidia-Channel + MSVC + Ninja + pip wheel +
+          # delvewheel) als die CPU-Tokens. Siehe Kommentar an build-cuda.
 
     steps:
       - name: Plattform-Filter
@@ -179,30 +142,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.py || '3.13' }}
-
-      # CUDA-Toolkit nur fuer CUDA-Tokens. Jimver/cuda-toolkit setzt CUDA_PATH +
-      # haengt nvcc an PATH/GITHUB_PATH; cibuildwheel laeuft auf Windows nativ
-      # (kein Container) und erbt die Runner-Umgebung, daher findet CMake die
-      # CUDAToolkit ueber GGML_CUDA=on. method=network + sub-packages spart die
-      # ~3 GB des Full-Installers (Runner-Disk + Zeit).
-      - name: CUDA-Toolkit (nur CUDA-Token)
-        if: steps.filter.outputs.build == 'yes' && matrix.cuda != ''
-        uses: Jimver/cuda-toolkit@v0.2.19
-        with:
-          cuda: ${{ matrix.cuda }}
-          method: network
-          # KEIN visual_studio_integration: dessen Subpaket-Installer crasht auf
-          # dem aktuellen Runner (exit 3772776473) und wird fuer den Ninja-Build
-          # ohnehin nicht gebraucht (nur der VS-Generator nutzt die MSBuild-Props).
-          sub-packages: '["nvcc", "cudart", "cccl", "cublas", "cublas_dev", "thrust"]'
-
-      # MSVC-Umgebung fuer den Ninja-CUDA-Build aktivieren (cl.exe + INCLUDE/LIB
-      # auf PATH). cibuildwheel selbst macht das nicht; ohne diesen Step findet
-      # cmake/nvcc keinen Host-Compiler. Schreibt nach GITHUB_ENV/GITHUB_PATH,
-      # daher erbt der spaetere cibuildwheel-Step die Umgebung.
-      - name: MSVC-Umgebung (nur CUDA-Token)
-        if: steps.filter.outputs.build == 'yes' && matrix.cuda != ''
-        uses: ilammy/msvc-dev-cmd@v1
 
       - name: cibuildwheel + sdist holen
         if: steps.filter.outputs.build == 'yes'
@@ -271,5 +210,144 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.token }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # CUDA-Wheel (win-amd64-cuda-cp311, SPEECH-2248) - GPU-beschleunigtes Windows-
+  # Wheel fuer die in-process-LLM-Runtime der SpeechFlow-App. Bewusst cp311
+  # (NICHT cp313 wie die CPU-Tokens): die App buendelt Python 3.11, der Client
+  # fragt daher genau win-amd64-cuda-cp311 an (speechflow/hardware.runtime_token,
+  # -cuda nur fuer win+amd64+NVIDIA). Die ABI des Wheels MUSS zum eingefrorenen
+  # Interpreter passen, sonst laedt llama_cpp nicht.
+  #
+  # Eigener Job statt cibuildwheel-Matrix, weil der CUDA-Build einen voellig
+  # anderen Toolchain-Weg braucht als die CPU-Tokens. Wir spiegeln abetlens
+  # erprobtes build-wheels-cuda.yaml 1:1:
+  #   - CUDA-Toolkit per conda/mamba vom nvidia-Channel (NICHT Jimver/cuda-toolkit:
+  #     dessen network-Installer crasht auf dem aktuellen Runner reproduzierbar
+  #     beim EXE-Start, exit 3772776473 - Runs 28424545254 und 28424743817, noch
+  #     vor jedem Subpaket).
+  #   - MSVC via ilammy/msvc-dev-cmd (cl.exe + INCLUDE/LIB als Host-Compiler).
+  #   - Ninja-Generator + expliziter -DCMAKE_CUDA_COMPILER=<nvcc> (kein fragiles
+  #     FindCUDAToolkit-Layout-Discovery).
+  #   - -allow-unsupported-compiler, weil windows-2022 ein MSVC traegt, das
+  #     CUDA 12.4 offiziell nicht mehr kennt (host_config-Check).
+  #   - pip wheel --no-binary :all: baut das Wheel aus dem PyPI-sdist; delvewheel
+  #     vendort cudart64_12/cublas64_12/cublasLt64_12 ins Wheel (--no-mangle-all
+  #     laesst die ko-gebundelten llama-DLLs unangetastet). Der NVIDIA-Treiber
+  #     allein liefert cublas NICHT, daher muessen die DLLs mit ins Wheel.
+  build-cuda:
+    needs: setup
+    name: win-amd64-cuda-cp311
+    runs-on: windows-2022
+    if: needs.setup.outputs.platforms == 'all' || needs.setup.outputs.platforms == 'win-cuda'
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CUDA_VERSION: "12.4.1"
+      # all-major deckt Maxwell..Hopper ab (inkl. sm_80 Ampere; das RTX-3080-Ti-
+      # Laptop sm_86 ist binaerkompatibel zur 80er-SASS) ohne fuer jede Minor-SM
+      # zu bauen.
+      CUDA_ARCHS: "all-major"
+    steps:
+      # mamba + Python 3.11-Env "llamacpp". miniforge bringt mamba mit, die
+      # Action aktiviert das Env in den Folge-Steps (pwsh).
+      - name: Mamba/Conda aufsetzen (Python 3.11)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: "llamacpp"
+          python-version: "3.11"
+          miniforge-version: latest
+          add-pip-as-python-dependency: true
+          auto-activate-base: false
+
+      # Host-Compiler. Schreibt INCLUDE/LIB/PATH nach GITHUB_ENV; der Build-Step
+      # (Kindprozess) erbt cl.exe.
+      - name: MSVC aktivieren
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: CUDA-Wheel bauen (mamba CUDA + Ninja + delvewheel)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cudaVersion = $env:CUDA_VERSION
+          $cudaChannel = "nvidia/label/cuda-$cudaVersion"
+          $llamaVersion = "${{ needs.setup.outputs.version }}"
+
+          # 1) CUDA-Toolkit ins aktive llamacpp-Env (mamba, nvidia-Channel).
+          #    cuda-toolkit-Metapaket + nvcc + cudart/cublas(-dev) explizit, damit
+          #    nvcc, die Header und die Runtime-DLLs sicher dabei sind.
+          mamba install -y --channel-priority flexible --override-channels -c $cudaChannel `
+            "${cudaChannel}::cuda-toolkit=$cudaVersion" `
+            "${cudaChannel}::cuda-nvcc_win-64" `
+            "${cudaChannel}::cuda-cccl" `
+            "${cudaChannel}::cuda-cudart" `
+            "${cudaChannel}::cuda-cudart-dev" `
+            "${cudaChannel}::libcublas" `
+            "${cudaChannel}::libcublas-dev"
+
+          # 2) Pfade ableiten. Auf Windows liegen die nvidia-conda-Pakete unter
+          #    $CONDA_PREFIX\Library (nicht direkt im Env-Root).
+          $cudaRoot = Join-Path $env:CONDA_PREFIX 'Library'
+          $cudaBin  = Join-Path $cudaRoot 'bin'
+          $nvccPath = Join-Path $cudaBin 'nvcc.exe'
+          if (-not (Test-Path $nvccPath)) { throw "nvcc nicht gefunden unter $nvccPath" }
+          $nvccCmake = $nvccPath.Replace('\','/')
+          & $nvccPath --version
+
+          # 3) Build-Tools ins Env. ninja.exe-Pfad an CMake durchreichen (absolut,
+          #    funktioniert unabhaengig von der Build-Isolation).
+          python -m pip install --upgrade pip wheel delvewheel ninja
+          $ninjaPath = (Join-Path $env:CONDA_PREFIX 'Scripts\ninja.exe')
+          if (-not (Test-Path $ninjaPath)) { $ninjaPath = (Get-Command ninja).Source }
+          $ninjaCmake = $ninjaPath.Replace('\','/')
+
+          # 4) Build-Umgebung. CMAKE_ARGS enthaelt den expliziten nvcc-Pfad, daher
+          #    braucht CMake kein Toolkit-Discovery. AVX2 bleibt fuer den
+          #    CPU-Fallback-Pfad an (kein AVX512).
+          $env:CUDA_PATH = $cudaRoot
+          $env:CUDA_HOME = $cudaRoot
+          $env:CUDAToolkit_ROOT = $cudaRoot
+          $env:CUDA_TOOLKIT_ROOT_DIR = $cudaRoot
+          $env:CUDACXX = $nvccCmake
+          $env:CMAKE_GENERATOR = 'Ninja'
+          $env:CMAKE_MAKE_PROGRAM = $ninjaCmake
+          $env:PATH = "$cudaBin;$env:PATH"
+          $env:FORCE_CMAKE = '1'
+          $env:CMAKE_ARGS = @(
+            "-DGGML_CUDA=on",
+            "-DGGML_NATIVE=OFF",
+            "-DGGML_AVX2=ON",
+            "-DGGML_AVX512=OFF",
+            "-DCMAKE_CUDA_ARCHITECTURES=$env:CUDA_ARCHS",
+            "-DCMAKE_CUDA_COMPILER=$nvccCmake",
+            "-DCMAKE_MAKE_PROGRAM=$ninjaCmake",
+            "-DCMAKE_CUDA_COMPILER_ARG1=-allow-unsupported-compiler",
+            "-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
+          ) -join ' '
+          Write-Host "CMAKE_ARGS = $env:CMAKE_ARGS"
+
+          # 5) Wheel aus dem PyPI-sdist bauen (von Quelle, kein prebuilt CPU-Wheel).
+          New-Item -ItemType Directory -Force -Path wheelhouse_raw | Out-Null
+          python -m pip wheel "llama-cpp-python==$llamaVersion" `
+            --no-binary :all: --no-deps -w wheelhouse_raw --verbose
+          $rawWheel = (Get-ChildItem wheelhouse_raw\*.whl | Select-Object -First 1).FullName
+          if (-not $rawWheel) { throw "Kein Wheel in wheelhouse_raw gebaut" }
+          Write-Host "Rohwheel: $rawWheel"
+
+          # 6) CUDA-Runtime-DLLs ins Wheel vendoren (cudart64_12/cublas64_12/
+          #    cublasLt64_12 liegen in $cudaBin). --no-mangle-all laesst die
+          #    ko-gebundelten libllama/libggml*-DLLs unangetastet.
+          New-Item -ItemType Directory -Force -Path wheelhouse | Out-Null
+          delvewheel repair --no-mangle-all --add-path "$cudaBin" -w wheelhouse $rawWheel
+          Write-Host "=== gebaute Wheels ==="
+          Get-ChildItem wheelhouse
+
+      - name: Artefakt hochladen (win-amd64-cuda-cp311)
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-amd64-cuda-cp311
           path: wheelhouse/*.whl
           if-no-files-found: error
