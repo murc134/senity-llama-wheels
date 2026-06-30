@@ -123,7 +123,13 @@ jobs:
           # den CPU-Fallback-Code erhalten (kein AVX512), CMAKE_CUDA_ARCHITECTURES
           # all-major deckt Maxwell..Hopper ab, ohne fuer jede Minor-SM zu bauen.
           - token: win-amd64-cuda-cp311
-            os: windows-latest
+            # Bewusst windows-2022 statt windows-latest: letzteres zeigt seit
+            # Juni 2026 auf windows-2025-vs2026 (Server 2025, Build 26100,
+            # Visual Studio 2026). Der CUDA-12.4.1-Installer kennt weder dieses
+            # OS noch die VS2026-Integration und crasht beim Entpacken
+            # (visual_studio_integration_12.4, exit 3772776473, Run 28336767329).
+            # CUDA 12.4 + VS2022 auf windows-2022 ist die validierte Kombination.
+            os: windows-2022
             archs: AMD64
             group: win-cuda
             py: "3.11"
@@ -132,6 +138,15 @@ jobs:
             cibw_environment: >-
               CMAKE_ARGS="-DGGML_CUDA=on -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DCMAKE_CUDA_ARCHITECTURES=all-major"
               FORCE_CMAKE=1
+            # Das CUDA-Wheel braucht cudart64_12 + cublas64_12/cublasLt64_12
+            # eingebettet, sonst laedt es auf einem Rechner ohne installiertes
+            # CUDA-Toolkit nicht (der NVIDIA-Treiber allein liefert cublas NICHT).
+            # delvewheel vendort diese DLLs ins Wheel; --no-mangle-all laesst die
+            # ko-gebundelten llama-DLLs (libllama/libggml*) unangetastet, die sich
+            # gegenseitig ueber feste Namen laden. Jimver/cuda-toolkit haengt das
+            # CUDA-bin an PATH, daher findet delvewheel cudart/cublas dort.
+            cibw_repair_windows: >-
+              delvewheel repair --no-mangle-all -w {dest_dir} {wheel}
 
     steps:
       - name: Plattform-Filter
@@ -208,6 +223,10 @@ jobs:
           # Wheel bleibt linux_x86_64 (glibc 2.28 vom Build-Image) - fuer den
           # direkten Katalog-Install voellig ausreichend.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: ""
+          # Windows: per Default kein Repair (CPU-Tokens bringen ihre DLLs schon
+          # ko-gebundelt mit). Nur das CUDA-Token setzt matrix.cibw_repair_windows
+          # und vendort damit die CUDA-Runtime-DLLs ins Wheel (siehe Matrix-Kommentar).
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ${{ matrix.cibw_repair_windows || '' }}
           CIBW_BUILD_VERBOSITY: "1"
           # llama.cpp braucht etwas Build-Zeit; ein Wheel pro Token reicht.
           CIBW_BEFORE_BUILD: "pip install cmake ninja"
